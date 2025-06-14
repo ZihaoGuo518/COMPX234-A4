@@ -1,45 +1,45 @@
-# 在 main 函数或 if __name__ == "__main__" 块中添加如下逻辑
-import socket
-import threading
-import random
-import os
+import base64
+import time
 
-def handle_client_request(filename, client_address):
-    # 在此线程中处理 file 传输逻辑（后面步骤会实现）
-    pass
+def start_file_thread(filename, port, client_address):
+    with open(filename, 'rb') as f:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server_socket.bind(('', port))
+        print(f"Started file thread on port {port} for {filename}")
 
-def main():
-    import sys
-    if len(sys.argv) != 2:
-        print("Usage: python3 UDPserver.py <port>")
-        return
+        file_data = f.read()
+        CHUNK_SIZE = 1000
+        total_size = len(file_data)
+        offset = 0
 
-    port = int(sys.argv[1])
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_socket.bind(('', port))
-    print(f"Server listening on port {port}")
+        while offset < total_size:
+            end = min(offset + CHUNK_SIZE - 1, total_size - 1)
+            chunk = file_data[offset:end+1]
+            encoded = base64.b64encode(chunk).decode()
+            header = f"FILE {filename} OK START {offset} END {end} DATA {encoded}"
+            received = False
+            for attempt in range(5):
+                server_socket.sendto(header.encode(), client_address)
+                server_socket.settimeout(1.5 * (attempt + 1))
+                try:
+                    req, _ = server_socket.recvfrom(4096)
+                    if req.decode().startswith(f"FILE {filename} GET START {offset}"):
+                        received = True
+                        break
+                except socket.timeout:
+                    print(f"Timeout waiting for GET, retrying {attempt + 1}/5...")
+            if not received:
+                print("Giving up on chunk transfer")
+                return
+            offset = end + 1
 
-    while True:
-        message, client_address = server_socket.recvfrom(4096)
-        decoded = message.decode().strip()
-        print(f"Received from {client_address}: {decoded}")
-        if decoded.startswith("DOWNLOAD "):
-            filename = decoded.split()[1]
-            file_path = os.path.join(".", filename)
-            if not os.path.isfile(file_path):
-                response = f"ERR {filename} NOT_FOUND"
-                server_socket.sendto(response.encode(), client_address)
-                continue
-            file_size = os.path.getsize(file_path)
-            data_port = random.randint(50000, 51000)
-            response = f"OK {filename} SIZE {file_size} PORT {data_port}"
-            server_socket.sendto(response.encode(), client_address)
-            threading.Thread(target=start_file_thread,
-                             args=(filename, data_port, client_address)).start()
-
-def start_file_thread(filename, data_port, client_address):
-    # 占位：后续步骤中具体实现
-    pass
-
-if __name__ == "__main__":
-    main()
+        # 等待 CLOSE 消息
+        while True:
+            try:
+                message, _ = server_socket.recvfrom(4096)
+                if message.decode().strip() == f"FILE {filename} CLOSE":
+                    server_socket.sendto(f"FILE {filename} CLOSE_OK".encode(), client_address)
+                    break
+            except:
+                pass
+        server_socket.close()
